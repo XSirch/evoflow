@@ -1,0 +1,5 @@
+{
+  "name": "EvoFlow Bot Manager",
+  "description": "A comprehensive dashboard to manage WhatsApp store assistants using Evolution API and Gemini AI.",
+  "requestFramePermissions": []
+}
