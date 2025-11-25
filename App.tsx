@@ -1,12 +1,14 @@
 
 import React, { useState, useEffect } from 'react';
 import { Sidebar } from './components/Sidebar';
+import { AuthScreen } from './components/AuthScreen';
+import { EvolutionSettings } from './components/EvolutionSettings';
 import { Dashboard } from './pages/Dashboard';
 import { Configuration } from './pages/Configuration';
 import { Simulator } from './pages/Simulator';
 import { Contacts } from './pages/Contacts';
 import { AppView, StoreConfig, EvolutionConfig, Contact, Tag } from './types';
-import { Settings as SettingsIcon, ShieldAlert, Save } from 'lucide-react';
+import * as api from './services/api';
 
 const DEFAULT_STORE_CONFIG: StoreConfig = {
   storeName: 'Loja Exemplo',
@@ -14,6 +16,8 @@ const DEFAULT_STORE_CONFIG: StoreConfig = {
   openingHours: 'Seg-Sex 08:00 às 18:00',
   tone: 'friendly',
   fallbackMessage: 'Vou chamar um especialista humano para te ajudar com isso. Um momento, por favor.',
+  instagram: '@lojaexemplo',
+  menuPdfUrl: '',
   knowledgeBase: [
     {
       id: '1',
@@ -50,43 +54,69 @@ const DEFAULT_CONTACTS: Contact[] = [
 
 const App: React.FC = () => {
   const [currentView, setCurrentView] = useState<AppView>(AppView.DASHBOARD);
-  
+  const [isAuthenticated, setIsAuthenticated] = useState<boolean>(false);
+  const [isLoading, setIsLoading] = useState<boolean>(true);
+
   // Persistent State
-  const [storeConfig, setStoreConfig] = useState<StoreConfig>(() => {
-    const saved = localStorage.getItem('storeConfig');
-    return saved ? JSON.parse(saved) : DEFAULT_STORE_CONFIG;
-  });
+  const [storeConfig, setStoreConfig] = useState<StoreConfig>(DEFAULT_STORE_CONFIG);
+  const [evoConfig, setEvoConfig] = useState<EvolutionConfig>(DEFAULT_EVO_CONFIG);
+  const [contacts, setContacts] = useState<Contact[]>(DEFAULT_CONTACTS);
+  const [tags, setTags] = useState<Tag[]>(DEFAULT_TAGS);
 
-  const [evoConfig, setEvoConfig] = useState<EvolutionConfig>(() => {
-    const saved = localStorage.getItem('evoConfig');
-    return saved ? JSON.parse(saved) : DEFAULT_EVO_CONFIG;
-  });
-
-  const [contacts, setContacts] = useState<Contact[]>(() => {
-    const saved = localStorage.getItem('contacts');
-    return saved ? JSON.parse(saved) : DEFAULT_CONTACTS;
-  });
-
-  const [tags, setTags] = useState<Tag[]>(() => {
-    const saved = localStorage.getItem('tags');
-    return saved ? JSON.parse(saved) : DEFAULT_TAGS;
-  });
-
+  // Check authentication and load data on mount
   useEffect(() => {
-    localStorage.setItem('storeConfig', JSON.stringify(storeConfig));
-  }, [storeConfig]);
+    const initializeApp = async () => {
+      const token = api.getToken();
+      if (!token) {
+        setIsLoading(false);
+        return;
+      }
 
-  useEffect(() => {
-    localStorage.setItem('evoConfig', JSON.stringify(evoConfig));
-  }, [evoConfig]);
+      try {
+        // Verify token is still valid
+        await api.getMe();
+        setIsAuthenticated(true);
 
-  useEffect(() => {
-    localStorage.setItem('contacts', JSON.stringify(contacts));
-  }, [contacts]);
+        // Load all data from backend
+        const [storeConfigData, evoConfigData, contactsData] = await Promise.all([
+          api.getStoreConfig(),
+          api.getEvolutionConfig(),
+          api.getContactsAndTags(),
+        ]);
 
-  useEffect(() => {
-    localStorage.setItem('tags', JSON.stringify(tags));
-  }, [tags]);
+        setStoreConfig(storeConfigData);
+        setEvoConfig(evoConfigData);
+        setContacts(contactsData.contacts);
+        setTags(contactsData.tags);
+      } catch (err) {
+        console.error('Failed to load data:', err);
+        api.clearToken();
+        setIsAuthenticated(false);
+      } finally {
+        setIsLoading(false);
+      }
+    };
+
+    initializeApp();
+  }, []);
+
+  const handleAuthSuccess = () => {
+    setIsAuthenticated(true);
+    // Reload the page to trigger data fetch
+    window.location.reload();
+  };
+
+  if (isLoading) {
+    return (
+      <div className="min-h-screen bg-slate-950 flex items-center justify-center">
+        <div className="text-white text-xl">Carregando...</div>
+      </div>
+    );
+  }
+
+  if (!isAuthenticated) {
+    return <AuthScreen onAuthSuccess={handleAuthSuccess} />;
+  }
 
   const renderContent = () => {
     switch (currentView) {
@@ -99,82 +129,7 @@ const App: React.FC = () => {
       case AppView.SIMULATOR:
         return <Simulator storeConfig={storeConfig} evolutionConfig={evoConfig} contacts={contacts} setContacts={setContacts} />;
       case AppView.SETTINGS:
-        return (
-          <div className="h-full overflow-y-auto p-8 max-w-4xl mx-auto">
-            <header className="mb-8 pb-6 border-b border-slate-800">
-              <h1 className="text-3xl font-bold text-white mb-2">Integração Evolution API</h1>
-              <p className="text-slate-400">Configure a conexão com sua instância do WhatsApp.</p>
-            </header>
-
-            <div className="bg-slate-800 border border-slate-700 rounded-2xl p-6 mb-6">
-              <div className="bg-yellow-500/10 border border-yellow-500/20 rounded-lg p-4 mb-6 flex items-start gap-3">
-                <ShieldAlert className="w-5 h-5 text-yellow-500 flex-shrink-0 mt-0.5" />
-                <div className="text-sm text-yellow-200">
-                  <p className="font-bold mb-1">Atenção de Segurança</p>
-                  <p className="opacity-80">Suas credenciais são salvas apenas no armazenamento local do seu navegador. Certifique-se de que sua instância da Evolution API permite conexões (CORS) se estiver testando diretamente deste painel.</p>
-                </div>
-              </div>
-
-              <div className="space-y-6">
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                  <div>
-                    <label className="block text-sm font-medium text-slate-300 mb-2">URL Base da API</label>
-                    <input 
-                      type="text" 
-                      value={evoConfig.baseUrl}
-                      onChange={(e) => setEvoConfig({...evoConfig, baseUrl: e.target.value})}
-                      placeholder="https://api.evolution-api.com"
-                      className="w-full bg-slate-900 border border-slate-700 rounded-lg px-4 py-3 text-white focus:ring-2 focus:ring-emerald-500 outline-none"
-                    />
-                  </div>
-                  <div>
-                    <label className="block text-sm font-medium text-slate-300 mb-2">Nome da Instância</label>
-                    <input 
-                      type="text" 
-                      value={evoConfig.instanceName}
-                      onChange={(e) => setEvoConfig({...evoConfig, instanceName: e.target.value})}
-                      placeholder="MinhaInstancia"
-                      className="w-full bg-slate-900 border border-slate-700 rounded-lg px-4 py-3 text-white focus:ring-2 focus:ring-emerald-500 outline-none"
-                    />
-                  </div>
-                </div>
-
-                <div>
-                  <label className="block text-sm font-medium text-slate-300 mb-2">API Key Global</label>
-                  <input 
-                    type="password" 
-                    value={evoConfig.apiKey}
-                    onChange={(e) => setEvoConfig({...evoConfig, apiKey: e.target.value})}
-                    placeholder="Digite sua chave de API..."
-                    className="w-full bg-slate-900 border border-slate-700 rounded-lg px-4 py-3 text-white focus:ring-2 focus:ring-emerald-500 outline-none font-mono"
-                  />
-                </div>
-
-                <div>
-                   <label className="block text-sm font-medium text-slate-300 mb-2">Número WhatsApp para Teste (com DDI)</label>
-                    <input 
-                      type="text" 
-                      value={evoConfig.phoneNumber}
-                      onChange={(e) => setEvoConfig({...evoConfig, phoneNumber: e.target.value})}
-                      placeholder="5511999999999"
-                      className="w-full bg-slate-900 border border-slate-700 rounded-lg px-4 py-3 text-white focus:ring-2 focus:ring-emerald-500 outline-none"
-                    />
-                   <p className="text-xs text-slate-500 mt-2">Usado pelo Simulador para testar o envio real via Evolution API.</p>
-                </div>
-              </div>
-            </div>
-            
-            <div className="flex justify-end mb-8">
-               <button 
-                disabled={true} // Auto-save is active, visual button only
-                className="flex items-center gap-2 bg-slate-700 text-slate-400 px-6 py-2 rounded-lg cursor-default"
-               >
-                 <Save className="w-4 h-4" />
-                 Salvo Automaticamente
-               </button>
-            </div>
-          </div>
-        );
+        return <EvolutionSettings config={evoConfig} onSave={setEvoConfig} />;
       default:
         return <Dashboard />;
     }

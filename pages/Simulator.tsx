@@ -2,8 +2,10 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { Send, Bot, RotateCcw, AlertTriangle, Smartphone, Loader2, UserCheck, UserX, User } from 'lucide-react';
 import { StoreConfig, EvolutionConfig, ChatMessage, Contact } from '../types';
-import { generateBotResponse } from '../services/gemini';
+import { generateBotResponse } from '../services/openrouter';
 import { sendWhatsAppMessage } from '../services/evolution';
+import * as api from '../services/api';
+import { v4 as uuidv4 } from 'uuid';
 
 interface SimulatorProps {
   storeConfig: StoreConfig;
@@ -16,6 +18,11 @@ export const Simulator: React.FC<SimulatorProps> = ({ storeConfig, evolutionConf
   // State to track which contact we are simulating
   const [selectedContactId, setSelectedContactId] = useState<string>('guest');
 
+  // Modelo da OpenRouter usado no simulador e no bot
+  const [selectedModel, setSelectedModel] = useState<string>(
+    process.env.OPENROUTER_MODEL || 'openai/gpt-4o-mini'
+  );
+
   const [messages, setMessages] = useState<ChatMessage[]>([
     { id: '1', role: 'model', content: `Olá! Bem-vindo à ${storeConfig.storeName}. Como posso ajudar você hoje?`, timestamp: new Date() }
   ]);
@@ -24,7 +31,9 @@ export const Simulator: React.FC<SimulatorProps> = ({ storeConfig, evolutionConf
   const [sendingToEvolution, setSendingToEvolution] = useState(false);
   const [evoStatus, setEvoStatus] = useState<{success?: boolean, error?: string} | null>(null);
   const [isHandoverActive, setIsHandoverActive] = useState(false);
-  
+  const [guestPhone, setGuestPhone] = useState('');
+  const [createdGuestContactId, setCreatedGuestContactId] = useState<string | null>(null);
+
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
   const scrollToBottom = () => {
@@ -41,6 +50,53 @@ export const Simulator: React.FC<SimulatorProps> = ({ storeConfig, evolutionConf
   const handleSend = async () => {
     if (!input.trim()) return;
 
+    // Se estamos simulando como visitante, precisamos garantir que existe um contato
+    // vinculado a esse número antes de continuar a conversa.
+    let effectiveContact = currentContact;
+
+    if (selectedContactId === 'guest') {
+      const normalizedGuestPhone = guestPhone.replace(/\D/g, '');
+      if (!normalizedGuestPhone) {
+        alert('Informe um número de WhatsApp para o visitante (DDD+Número).');
+        return;
+      }
+
+      if (!setContacts) {
+        alert('Função de atualização de contatos (setContacts) não está disponível.');
+        return;
+      }
+
+      // Se ainda não criamos um contato para este visitante nesta sessão, criamos agora.
+      if (!createdGuestContactId) {
+        const newContact: Contact = {
+          id: uuidv4(),
+          name: 'Cliente Novo',
+          phoneNumber: normalizedGuestPhone,
+          tags: [],
+          permission: 'denied',
+        };
+
+        try {
+          await api.saveContact(newContact);
+          const updatedContacts = [...contacts, newContact];
+          setContacts(updatedContacts);
+          setCreatedGuestContactId(newContact.id);
+          setSelectedContactId(newContact.id);
+          effectiveContact = newContact;
+        } catch (err) {
+          console.error('Erro ao criar contato visitante automaticamente:', err);
+          alert('Não foi possível salvar o contato visitante no backend.');
+          return;
+        }
+      } else {
+        // Já criamos um contato nesta sessão; usar ele como contato atual
+        const existingGuest = contacts.find((c) => c.id === createdGuestContactId);
+        if (existingGuest) {
+          effectiveContact = existingGuest;
+        }
+      }
+    }
+
     // Check permission logic for SIMULATOR (In real app, backend blocks this)
     // If contact is denied, we still let them send messages TO the bot, but bot might refuse to send PROMOS.
     // However, here we are simulating a chat session.
@@ -49,10 +105,10 @@ export const Simulator: React.FC<SimulatorProps> = ({ storeConfig, evolutionConf
       id: Date.now().toString(),
       role: 'user',
       content: input,
-      timestamp: new Date()
+      timestamp: new Date(),
     };
 
-    setMessages(prev => [...prev, userMsg]);
+    setMessages((prev) => [...prev, userMsg]);
     setInput('');
     setEvoStatus(null);
 
@@ -81,15 +137,17 @@ export const Simulator: React.FC<SimulatorProps> = ({ storeConfig, evolutionConf
     // IF BOT IS ACTIVE
     setIsTyping(true);
 
-    // 1. Generate Gemini Response
+    // 1. Gerar resposta da OpenRouter
     const history = messages
-      .filter(m => m.role !== 'system') 
-      .map(m => ({
+      .filter((m) => m.role !== 'system')
+      .map((m) => ({
         role: m.role,
-        parts: [{ text: m.content }]
+        parts: [{ text: m.content }],
       }));
 
-    const botResult = await generateBotResponse(input, history, storeConfig, currentContact);
+    const botResult = await generateBotResponse(input, history, storeConfig, currentContact, {
+      model: selectedModel,
+    });
     
     const botMsg: ChatMessage = {
       id: (Date.now() + 1).toString(),
@@ -131,9 +189,9 @@ export const Simulator: React.FC<SimulatorProps> = ({ storeConfig, evolutionConf
     // 2. If Evolution Config is present, try to send via API
     if (evolutionConfig.apiKey && evolutionConfig.baseUrl) {
       setSendingToEvolution(true);
-      const targetPhone = currentContact ? currentContact.phoneNumber : evolutionConfig.phoneNumber;
+      const targetPhone = effectiveContact ? effectiveContact.phoneNumber : evolutionConfig.phoneNumber;
       const tempConfig = { ...evolutionConfig, phoneNumber: targetPhone };
-      
+
       const result = await sendWhatsAppMessage(tempConfig, botResult.text);
       setSendingToEvolution(false);
       setEvoStatus(result);
@@ -146,6 +204,11 @@ export const Simulator: React.FC<SimulatorProps> = ({ storeConfig, evolutionConf
     ]);
     setEvoStatus(null);
     setIsHandoverActive(false);
+    setGuestPhone('');
+    setCreatedGuestContactId(null);
+    if (selectedContactId !== 'guest') {
+      setSelectedContactId('guest');
+    }
   };
 
   return (
@@ -167,7 +230,21 @@ export const Simulator: React.FC<SimulatorProps> = ({ storeConfig, evolutionConf
               </p>
             </div>
           </div>
-          <div className="flex gap-2">
+          <div className="flex gap-3 items-center">
+            {/* Seletor de modelo da OpenRouter (vale para simulador e bot) */}
+            <div className="flex flex-col text-right">
+              <span className="text-[10px] text-slate-400 uppercase font-semibold">Modelo OpenRouter</span>
+              <select
+                value={selectedModel}
+                onChange={(e) => setSelectedModel(e.target.value)}
+                className="mt-1 bg-slate-900 text-xs text-white border border-slate-600 rounded-lg px-2 py-1 outline-none focus:border-emerald-500"
+              >
+                <option value="openai/gpt-4o-mini">openai/gpt-4o-mini (padrão recomendado)</option>
+                <option value="openai/gpt-5-mini">openai/gpt-5-mini (raciocínio, experimental)</option>
+                <option value="meta-llama/llama-3.1-8b-instruct:free">Llama 3.1 8B Instruct (free)</option>
+              </select>
+            </div>
+
             {isHandoverActive && (
                <button onClick={() => setIsHandoverActive(false)} className="px-3 py-1.5 bg-emerald-500/20 text-emerald-400 text-xs font-bold rounded-lg hover:bg-emerald-500/30 transition-colors flex items-center gap-1">
                  <Bot className="w-3 h-3" /> Retomar Bot
@@ -180,9 +257,9 @@ export const Simulator: React.FC<SimulatorProps> = ({ storeConfig, evolutionConf
         </div>
 
         {/* Context Selector Bar */}
-        <div className="bg-slate-900 border-b border-slate-800 px-4 py-2 flex items-center gap-3">
+        <div className="bg-slate-900 border-b border-slate-800 px-4 py-2 flex items-center gap-3 flex-wrap">
           <span className="text-xs text-slate-500 uppercase font-bold">Simulando como:</span>
-          <select 
+          <select
             value={selectedContactId}
             onChange={(e) => {
               setSelectedContactId(e.target.value);
@@ -197,7 +274,17 @@ export const Simulator: React.FC<SimulatorProps> = ({ storeConfig, evolutionConf
               </option>
             ))}
           </select>
-          
+
+          {selectedContactId === 'guest' && (
+            <input
+              type="text"
+              value={guestPhone}
+              onChange={(e) => setGuestPhone(e.target.value)}
+              placeholder="WhatsApp visitante (DDD+Número)"
+              className="bg-slate-800 text-sm text-white border border-slate-700 rounded-lg px-2 py-1 outline-none focus:border-emerald-500 flex-1 min-w-[180px]"
+            />
+          )}
+
           {currentContact && (
              <div className={`text-xs px-2 py-1 rounded border ${currentContact.permission === 'allowed' ? 'border-emerald-500/30 text-emerald-500' : 'border-red-500/30 text-red-500'}`}>
                 {currentContact.permission === 'allowed' ? 'Permite Mensagens' : 'Bloqueia Mensagens'}
@@ -317,7 +404,7 @@ export const Simulator: React.FC<SimulatorProps> = ({ storeConfig, evolutionConf
                )}
              </div>
             <div className="flex items-center justify-between mt-2">
-              <span className="text-sm text-slate-300">Gemini 2.5 Flash</span>
+              <span className="text-sm text-slate-300">OpenRouter (modelo selecionado)</span>
               <div className={`w-2 h-2 rounded-full ${isHandoverActive ? 'bg-slate-600' : 'bg-emerald-500'}`}></div>
             </div>
           </div>

@@ -1,8 +1,9 @@
 
 import React, { useEffect, useState, useRef } from 'react';
-import { MessageCircle, Users, Clock, Activity, UserCheck, ChevronRight, X, Bot, User, CheckCircle, AlertCircle, Send, Loader2 } from 'lucide-react';
+import { MessageCircle, Users, Clock, Activity, UserCheck, ChevronRight, X, Bot, User, CheckCircle, AlertCircle, Send, Loader2, Trash2 } from 'lucide-react';
 import { DashboardStats } from '../types';
 import { sendWhatsAppMessage } from '../services/evolution';
+import { getDashboardStats, getDashboardConversations, getConversationMessages, deleteConversation } from '../services/api';
 
 // Interface local para simular dados do Dashboard
 interface ChatHistoryItem {
@@ -43,83 +44,69 @@ export const Dashboard: React.FC = () => {
   // Estados de Resposta Manual
   const [replyText, setReplyText] = useState('');
   const [isSending, setIsSending] = useState(false);
+  const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
   // Carregar config para envio real (hack para Dashboard)
   const evoConfig = JSON.parse(localStorage.getItem('evoConfig') || '{}');
 
+  // Carregar dados reais do backend
   useEffect(() => {
-    // Simulação de carregamento de dados
-    const timer = setTimeout(() => {
-      setStats({
-        totalMessages: 1248,
-        activeChats: 8,
-        aiResponseTime: 1.2,
-        humanHandovers: 15
-      });
-
-      // Dados mockados de conversas
-      setActiveChats([
-        {
-          id: '1',
-          customerName: 'João Silva',
-          phoneNumber: '5511999990001',
-          status: 'active',
-          lastMessage: 'Qual o preço da pizza de calabresa?',
-          lastMessageSender: 'user',
-          unreadCount: 1,
-          history: [
-            { sender: 'user', content: 'Boa noite', timestamp: '19:30' },
-            { sender: 'bot', content: 'Olá! Bem-vindo à nossa pizzaria. Como posso ajudar?', timestamp: '19:30' },
-            { sender: 'user', content: 'Qual o preço da pizza de calabresa?', timestamp: '19:31' }
-          ]
-        },
-        {
-          id: '2',
-          customerName: 'Maria Oliveira',
-          phoneNumber: '5511988880002',
-          status: 'waiting_human',
-          lastMessage: 'Preciso falar com um atendente agora.',
-          lastMessageSender: 'user',
-          unreadCount: 0,
-          history: [
-            { sender: 'user', content: 'Meu pedido veio errado', timestamp: '19:15' },
-            { sender: 'bot', content: 'Sinto muito por isso. O que houve com seu pedido?', timestamp: '19:15' },
-            { sender: 'user', content: 'Veio fria e sabor errado. Preciso falar com um atendente agora.', timestamp: '19:16' },
-            { sender: 'system', content: 'Transbordo iniciado: Cliente solicitou humano.', timestamp: '19:16' }
-          ]
-        },
-        {
-          id: '3',
-          customerName: 'Pedro Santos',
-          phoneNumber: '5521977770003',
-          status: 'completed',
-          lastMessage: 'Obrigado, até a próxima!',
-          lastMessageSender: 'user',
-          unreadCount: 0,
-          history: [
-            { sender: 'user', content: 'Vocês entregam no centro?', timestamp: '18:45' },
-            { sender: 'bot', content: 'Sim, entregamos em toda a região central com frete grátis.', timestamp: '18:45' },
-            { sender: 'user', content: 'Obrigado, até a próxima!', timestamp: '18:46' }
-          ]
-        },
-        {
-          id: '4',
-          customerName: 'Ana Costa',
-          phoneNumber: '5531966660004',
-          status: 'active',
-          lastMessage: 'Tem opção vegana?',
-          lastMessageSender: 'user',
-          unreadCount: 2,
-          history: [
-            { sender: 'user', content: 'Olá', timestamp: '19:40' },
-            { sender: 'user', content: 'Tem opção vegana?', timestamp: '19:40' }
-          ]
-        }
-      ]);
-    }, 500);
-    return () => clearTimeout(timer);
+    loadDashboardData();
   }, []);
+
+  // Recarregar conversas quando o filtro mudar
+  useEffect(() => {
+    loadConversations();
+  }, [filterStatus]);
+
+  // Polling para atualizar lista de conversas a cada 5 segundos
+  useEffect(() => {
+    const pollInterval = setInterval(() => {
+      loadConversations();
+      loadDashboardData();
+    }, 5000);
+
+    return () => clearInterval(pollInterval);
+  }, [filterStatus]);
+
+  const loadDashboardData = async () => {
+    try {
+      const statsData = await getDashboardStats();
+      setStats(statsData);
+      await loadConversations();
+    } catch (error) {
+      console.error('Erro ao carregar dados do dashboard:', error);
+    }
+  };
+
+  const loadConversations = async () => {
+    try {
+      const { conversations } = await getDashboardConversations(filterStatus);
+      setActiveChats(conversations.map(conv => ({
+        id: conv.id,
+        customerName: conv.customerName,
+        phoneNumber: conv.phoneNumber,
+        status: conv.status as 'active' | 'waiting_human' | 'completed',
+        lastMessage: conv.lastMessage,
+        lastMessageSender: conv.lastMessageSender,
+        unreadCount: 0,
+        history: []
+      })));
+    } catch (error) {
+      console.error('Erro ao carregar conversas:', error);
+    }
+  };
+
+  const loadChatHistory = async (conversationId: string) => {
+    try {
+      const { messages } = await getConversationMessages(conversationId);
+      return messages;
+    } catch (error) {
+      console.error('Erro ao carregar histórico:', error);
+      return [];
+    }
+  };
 
   // Scroll to bottom when chat opens or history changes
   useEffect(() => {
@@ -133,6 +120,41 @@ export const Dashboard: React.FC = () => {
     setReplyText('');
   }, [selectedChat?.id]);
 
+  // Polling para atualizar mensagens em tempo real quando modal está aberto
+  useEffect(() => {
+    if (!selectedChat) return;
+
+    const pollInterval = setInterval(async () => {
+      try {
+        const { messages } = await getConversationMessages(selectedChat.id);
+
+        // Atualizar apenas se houver novas mensagens
+        if (messages.length !== selectedChat.history.length) {
+          const updatedChat = {
+            ...selectedChat,
+            history: messages
+          };
+          setSelectedChat(updatedChat);
+
+          // Atualizar também na lista de conversas
+          setActiveChats(prev => prev.map(chat =>
+            chat.id === selectedChat.id
+              ? {
+                  ...chat,
+                  lastMessage: messages[messages.length - 1]?.content || chat.lastMessage,
+                  lastMessageSender: messages[messages.length - 1]?.sender || chat.lastMessageSender
+                }
+              : chat
+          ));
+        }
+      } catch (error) {
+        console.error('Erro ao atualizar mensagens:', error);
+      }
+    }, 3000); // Atualiza a cada 3 segundos
+
+    return () => clearInterval(pollInterval);
+  }, [selectedChat?.id, selectedChat?.history.length]);
+
   // Lógica de filtragem
   const filteredChats = activeChats.filter(chat => {
     if (filterStatus === 'all') return true;
@@ -140,6 +162,16 @@ export const Dashboard: React.FC = () => {
   });
 
   // --- Actions ---
+
+  const handleOpenChat = async (chat: ActiveChat) => {
+    // Carregar histórico real do backend
+    const history = await loadChatHistory(chat.id);
+    const chatWithHistory = {
+      ...chat,
+      history: history
+    };
+    setSelectedChat(chatWithHistory);
+  };
 
   const handleTakeover = () => {
     if (!selectedChat) return;
@@ -193,6 +225,27 @@ export const Dashboard: React.FC = () => {
     setIsSending(false);
   };
 
+  const handleDeleteConversation = async () => {
+    if (!selectedChat) return;
+
+    try {
+      await deleteConversation(selectedChat.id);
+
+      // Remover da lista local
+      setActiveChats(prev => prev.filter(chat => chat.id !== selectedChat.id));
+
+      // Fechar modal
+      setSelectedChat(null);
+      setShowDeleteConfirm(false);
+
+      // Recarregar dados
+      await loadDashboardData();
+    } catch (error) {
+      console.error('Erro ao deletar conversa:', error);
+      alert('Erro ao deletar conversa. Tente novamente.');
+    }
+  };
+
   // --- Components ---
 
   const StatCard = ({ icon: Icon, label, value, subtext, color }: any) => (
@@ -230,157 +283,133 @@ export const Dashboard: React.FC = () => {
         <p className="text-slate-400">Visão geral do desempenho do seu bot de atendimento.</p>
       </header>
 
+      {/* Conversas Recentes - MOVIDO PARA O TOPO */}
+      <div className="bg-slate-800 border border-slate-700 rounded-2xl p-6 mb-8 flex flex-col h-[500px]">
+        <div className="mb-4">
+          <h3 className="text-lg font-semibold text-white flex items-center gap-2 mb-4">
+            <Users className="w-5 h-5 text-emerald-400" />
+            Conversas Recentes
+          </h3>
+
+          {/* Filtros */}
+          <div className="flex flex-wrap gap-2">
+            <FilterButton
+              label="Todas"
+              value="all"
+              count={activeChats.length}
+              colorClass="bg-slate-600 text-white"
+            />
+            <FilterButton
+              label="Em Andamento"
+              value="active"
+              count={activeChats.filter(c => c.status === 'active').length}
+              colorClass="bg-blue-600 text-white"
+            />
+            <FilterButton
+              label="Aguardando Humano"
+              value="waiting_human"
+              count={activeChats.filter(c => c.status === 'waiting_human').length}
+              colorClass="bg-yellow-600 text-white"
+            />
+            <FilterButton
+              label="Finalizadas"
+              value="completed"
+              count={activeChats.filter(c => c.status === 'completed').length}
+              colorClass="bg-emerald-600 text-white"
+            />
+          </div>
+        </div>
+
+        <div className="flex-1 overflow-y-auto space-y-3 pr-2 custom-scrollbar">
+          {filteredChats.length === 0 ? (
+            <div className="h-full flex flex-col items-center justify-center text-slate-500">
+              <div className="w-12 h-12 rounded-full bg-slate-900 flex items-center justify-center mb-2">
+                 <MessageCircle className="w-6 h-6 opacity-50" />
+              </div>
+              <p className="text-sm">Nenhuma conversa encontrada.</p>
+            </div>
+          ) : (
+            filteredChats.map((chat) => (
+              <div
+                key={chat.id}
+                onClick={() => handleOpenChat(chat)}
+                className={`group p-4 rounded-xl border transition-all cursor-pointer relative ${
+                  chat.status === 'waiting_human'
+                    ? 'bg-yellow-500/5 border-yellow-500/20 hover:border-yellow-500/40 hover:bg-yellow-500/10'
+                    : chat.status === 'completed'
+                    ? 'bg-slate-900/50 border-slate-800 hover:border-slate-700 opacity-75 hover:opacity-100'
+                    : 'bg-slate-900 border-slate-700 hover:border-emerald-500/50 hover:bg-slate-800'
+                }`}
+              >
+                <div className="flex justify-between items-start mb-1">
+                  <div>
+                    <h4 className="font-bold text-white flex items-center gap-2">
+                      {chat.customerName}
+                      {chat.status === 'waiting_human' && (
+                        <span className="text-[10px] bg-yellow-500 text-slate-900 px-1.5 py-0.5 rounded font-bold flex items-center gap-1">
+                          <AlertCircle className="w-3 h-3" /> AJUDA
+                        </span>
+                      )}
+                      {chat.status === 'completed' && (
+                        <span className="text-[10px] bg-slate-700 text-slate-300 px-1.5 py-0.5 rounded font-bold flex items-center gap-1">
+                          <CheckCircle className="w-3 h-3" /> FIM
+                        </span>
+                      )}
+                    </h4>
+                    <p className="text-xs text-slate-500">{chat.phoneNumber}</p>
+                  </div>
+                  <span className="text-xs text-slate-500">
+                    {chat.lastMessageAt ? new Date(chat.lastMessageAt).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' }) : ''}
+                  </span>
+                </div>
+                <p className={`text-sm text-slate-400 line-clamp-1 group-hover:text-slate-300 transition-colors ${chat.unreadCount > 0 ? 'font-semibold text-slate-200' : ''}`}>
+                  {chat.lastMessageSender === 'user' ? '👤 ' : '🤖 '}{chat.lastMessage}
+                </p>
+
+                <div className="absolute right-4 bottom-4 opacity-0 group-hover:opacity-100 transition-opacity">
+                  <span className="text-xs text-emerald-400 font-medium flex items-center gap-1">
+                    Ver Histórico <ChevronRight className="w-3 h-3" />
+                  </span>
+                </div>
+              </div>
+            ))
+          )}
+        </div>
+      </div>
+
       {/* Stats Grid */}
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6 mb-8">
-        <StatCard 
+        <StatCard
           icon={MessageCircle}
           label="Mensagens Totais"
           value={stats.totalMessages.toLocaleString()}
-          subtext="+12% vs semana passada"
+          subtext="Total de mensagens processadas"
           color="emerald"
         />
-        <StatCard 
+        <StatCard
           icon={Users}
           label="Conversas Ativas"
           value={stats.activeChats}
-          subtext="Em tempo real"
+          subtext="Conversas em andamento"
           color="blue"
         />
-        <StatCard 
+        <StatCard
           icon={Clock}
           label="Tempo de Resposta (IA)"
           value={`${stats.aiResponseTime}s`}
-          subtext="Média das últimas 24h"
+          subtext="Tempo médio de resposta"
           color="violet"
         />
-        <StatCard 
+        <StatCard
           icon={UserCheck}
           label="Transbordos"
           value={stats.humanHandovers}
-          subtext="Encaminhados para humano"
+          subtext="Aguardando atendimento humano"
           color="yellow"
         />
       </div>
 
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 pb-8">
-        {/* Activity Feed */}
-        <div className="bg-slate-800 border border-slate-700 rounded-2xl p-6">
-          <div className="flex items-center justify-between mb-6">
-            <h3 className="text-lg font-semibold text-white flex items-center gap-2">
-              <Activity className="w-5 h-5 text-blue-400" />
-              Log de Eventos
-            </h3>
-            <span className="text-xs bg-blue-500/10 text-blue-400 px-2 py-1 rounded-full">Ao vivo</span>
-          </div>
-          <div className="space-y-4">
-            {[1, 2, 3].map((i) => (
-              <div key={i} className="flex items-start space-x-3 p-3 rounded-lg bg-slate-900/50 border border-slate-700/50">
-                <div className="w-8 h-8 rounded-full bg-slate-700 flex items-center justify-center text-xs font-bold text-slate-300">
-                  LOG
-                </div>
-                <div className="flex-1">
-                  <p className="text-sm text-slate-300">
-                    <span className="text-emerald-400 font-medium">Webhook recebido</span>: Mensagem processada com sucesso via API.
-                  </p>
-                  <p className="text-xs text-slate-500 mt-1">Há {i * 5} minutos</p>
-                </div>
-              </div>
-            ))}
-          </div>
-        </div>
 
-        {/* Active Conversations List */}
-        <div className="bg-slate-800 border border-slate-700 rounded-2xl p-6 flex flex-col h-[500px]">
-          <div className="mb-4">
-            <h3 className="text-lg font-semibold text-white flex items-center gap-2 mb-4">
-              <Users className="w-5 h-5 text-emerald-400" />
-              Conversas
-            </h3>
-            
-            {/* Filtros */}
-            <div className="flex flex-wrap gap-2">
-              <FilterButton 
-                label="Todas" 
-                value="all" 
-                count={activeChats.length}
-                colorClass="bg-slate-600 text-white"
-              />
-              <FilterButton 
-                label="Em Andamento" 
-                value="active" 
-                count={activeChats.filter(c => c.status === 'active').length}
-                colorClass="bg-blue-600 text-white"
-              />
-              <FilterButton 
-                label="Aguardando Humano" 
-                value="waiting_human" 
-                count={activeChats.filter(c => c.status === 'waiting_human').length}
-                colorClass="bg-yellow-600 text-white"
-              />
-              <FilterButton 
-                label="Finalizadas" 
-                value="completed" 
-                count={activeChats.filter(c => c.status === 'completed').length}
-                colorClass="bg-emerald-600 text-white"
-              />
-            </div>
-          </div>
-
-          <div className="flex-1 overflow-y-auto space-y-3 pr-2 custom-scrollbar">
-            {filteredChats.length === 0 ? (
-              <div className="h-full flex flex-col items-center justify-center text-slate-500">
-                <div className="w-12 h-12 rounded-full bg-slate-900 flex items-center justify-center mb-2">
-                   <MessageCircle className="w-6 h-6 opacity-50" />
-                </div>
-                <p className="text-sm">Nenhuma conversa encontrada.</p>
-              </div>
-            ) : (
-              filteredChats.map((chat) => (
-                <div 
-                  key={chat.id} 
-                  onClick={() => setSelectedChat(chat)}
-                  className={`group p-4 rounded-xl border transition-all cursor-pointer relative ${
-                    chat.status === 'waiting_human' 
-                      ? 'bg-yellow-500/5 border-yellow-500/20 hover:border-yellow-500/40 hover:bg-yellow-500/10' 
-                      : chat.status === 'completed'
-                      ? 'bg-slate-900/50 border-slate-800 hover:border-slate-700 opacity-75 hover:opacity-100'
-                      : 'bg-slate-900 border-slate-700 hover:border-emerald-500/50 hover:bg-slate-800'
-                  }`}
-                >
-                  <div className="flex justify-between items-start mb-1">
-                    <div>
-                      <h4 className="font-bold text-white flex items-center gap-2">
-                        {chat.customerName}
-                        {chat.status === 'waiting_human' && (
-                          <span className="text-[10px] bg-yellow-500 text-slate-900 px-1.5 py-0.5 rounded font-bold flex items-center gap-1">
-                            <AlertCircle className="w-3 h-3" /> AJUDA
-                          </span>
-                        )}
-                        {chat.status === 'completed' && (
-                          <span className="text-[10px] bg-slate-700 text-slate-300 px-1.5 py-0.5 rounded font-bold flex items-center gap-1">
-                            <CheckCircle className="w-3 h-3" /> FIM
-                          </span>
-                        )}
-                      </h4>
-                      <p className="text-xs text-slate-500">{chat.phoneNumber}</p>
-                    </div>
-                    <span className="text-xs text-slate-500">19:30</span>
-                  </div>
-                  <p className={`text-sm text-slate-400 line-clamp-1 group-hover:text-slate-300 transition-colors ${chat.unreadCount > 0 ? 'font-semibold text-slate-200' : ''}`}>
-                    {chat.lastMessageSender === 'user' ? '👤 ' : '🤖 '}{chat.lastMessage}
-                  </p>
-                  
-                  <div className="absolute right-4 bottom-4 opacity-0 group-hover:opacity-100 transition-opacity">
-                    <span className="text-xs text-emerald-400 font-medium flex items-center gap-1">
-                      Ver Histórico <ChevronRight className="w-3 h-3" />
-                    </span>
-                  </div>
-                </div>
-              ))
-            )}
-          </div>
-        </div>
-      </div>
 
       {/* Chat History Modal */}
       {selectedChat && (
@@ -401,12 +430,21 @@ export const Dashboard: React.FC = () => {
                   <p className="text-xs text-slate-400">{selectedChat.phoneNumber}</p>
                 </div>
               </div>
-              <button 
-                onClick={() => setSelectedChat(null)}
-                className="p-2 hover:bg-slate-700 rounded-full text-slate-400 hover:text-white transition-colors"
-              >
-                <X className="w-5 h-5" />
-              </button>
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={() => setShowDeleteConfirm(true)}
+                  className="p-2 hover:bg-red-900/30 rounded-full text-slate-400 hover:text-red-400 transition-colors"
+                  title="Deletar conversa"
+                >
+                  <Trash2 className="w-5 h-5" />
+                </button>
+                <button
+                  onClick={() => setSelectedChat(null)}
+                  className="p-2 hover:bg-slate-700 rounded-full text-slate-400 hover:text-white transition-colors"
+                >
+                  <X className="w-5 h-5" />
+                </button>
+              </div>
             </div>
 
             {/* Chat History Body */}
@@ -493,6 +531,45 @@ export const Dashboard: React.FC = () => {
                   Conversa finalizada.
                 </div>
               )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Delete Confirmation Modal */}
+      {showDeleteConfirm && selectedChat && (
+        <div className="fixed inset-0 z-[60] flex items-center justify-center p-4 bg-slate-950/90 backdrop-blur-sm animate-fade-in">
+          <div className="bg-slate-800 w-full max-w-md rounded-2xl border border-slate-700 shadow-2xl p-6">
+            <div className="flex items-center gap-3 mb-4">
+              <div className="w-12 h-12 rounded-full bg-red-500/10 flex items-center justify-center">
+                <Trash2 className="w-6 h-6 text-red-500" />
+              </div>
+              <div>
+                <h3 className="text-lg font-bold text-white">Deletar Conversa</h3>
+                <p className="text-sm text-slate-400">Esta ação não pode ser desfeita</p>
+              </div>
+            </div>
+
+            <p className="text-slate-300 mb-6">
+              Tem certeza que deseja deletar a conversa com <span className="font-bold text-white">{selectedChat.customerName}</span>?
+              <br />
+              <span className="text-sm text-slate-500">Todo o histórico de mensagens será permanentemente removido.</span>
+            </p>
+
+            <div className="flex gap-3">
+              <button
+                onClick={() => setShowDeleteConfirm(false)}
+                className="flex-1 bg-slate-700 hover:bg-slate-600 text-white font-medium py-2.5 rounded-lg transition-all"
+              >
+                Cancelar
+              </button>
+              <button
+                onClick={handleDeleteConversation}
+                className="flex-1 bg-red-600 hover:bg-red-500 text-white font-medium py-2.5 rounded-lg transition-all flex items-center justify-center gap-2"
+              >
+                <Trash2 className="w-4 h-4" />
+                Deletar
+              </button>
             </div>
           </div>
         </div>

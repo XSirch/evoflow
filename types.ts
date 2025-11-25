@@ -35,6 +35,8 @@ export interface StoreConfig {
   tone: 'formal' | 'friendly' | 'enthusiastic';
   knowledgeBase: KnowledgeDocument[];
   fallbackMessage: string; // Message sent when handing over to human
+  instagram: string; // Instagram handle (e.g., @loja)
+  menuPdfUrl: string; // URL do PDF do cardápio
 }
 
 export interface EvolutionConfig {

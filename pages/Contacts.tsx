@@ -4,6 +4,7 @@ import { Users, UserPlus, Trash2, Send, Search, Loader2, Tag as TagIcon, X } fro
 import { Contact, EvolutionConfig, Tag } from '../types';
 import { sendWhatsAppMessage } from '../services/evolution';
 import { v4 as uuidv4 } from 'uuid';
+import * as api from '../services/api';
 
 interface ContactsProps {
   contacts: Contact[];
@@ -42,7 +43,7 @@ export const Contacts: React.FC<ContactsProps> = ({ contacts, setContacts, tags,
 
   // --- Contact Management ---
 
-  const handleAddContact = (e: React.FormEvent) => {
+  const handleAddContact = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!newName || !newPhone) return;
 
@@ -54,24 +55,46 @@ export const Contacts: React.FC<ContactsProps> = ({ contacts, setContacts, tags,
       permission: 'allowed' // Default permission
     };
 
-    setContacts([...contacts, newContact]);
-    setNewName('');
-    setNewPhone('');
-    setSelectedTags([]);
-    // Don't close form immediately to allow adding multiple
+    try {
+      await api.saveContact(newContact);
+      setContacts([...contacts, newContact]);
+      setNewName('');
+      setNewPhone('');
+      setSelectedTags([]);
+    } catch (err) {
+      console.error('Failed to add contact:', err);
+      alert('Erro ao adicionar contato');
+    }
   };
 
-  const handleDeleteContact = (id: string) => {
-    setContacts(contacts.filter(c => c.id !== id));
+  const handleDeleteContact = async (id: string) => {
+    try {
+      await api.deleteContact(id);
+      setContacts(contacts.filter(c => c.id !== id));
+    } catch (err) {
+      console.error('Failed to delete contact:', err);
+      alert('Erro ao deletar contato');
+    }
   };
 
-  const togglePermission = (id: string) => {
-    setContacts(contacts.map(c => {
-      if (c.id === id) {
-        return { ...c, permission: c.permission === 'allowed' ? 'denied' : 'allowed' };
-      }
-      return c;
-    }));
+  const togglePermission = async (id: string) => {
+    const contact = contacts.find(c => c.id === id);
+    if (!contact) return;
+
+    const newPermission = contact.permission === 'allowed' ? 'denied' : 'allowed';
+
+    try {
+      await api.updateContactPermission(id, newPermission);
+      setContacts(contacts.map(c => {
+        if (c.id === id) {
+          return { ...c, permission: newPermission };
+        }
+        return c;
+      }));
+    } catch (err) {
+      console.error('Failed to update permission:', err);
+      alert('Erro ao atualizar permissão');
+    }
   };
 
   const toggleTagForNewContact = (tagId: string) => {
@@ -84,24 +107,37 @@ export const Contacts: React.FC<ContactsProps> = ({ contacts, setContacts, tags,
 
   // --- Tag Management ---
 
-  const handleAddTag = () => {
+  const handleAddTag = async () => {
     if (!newTagName) return;
     const newTag: Tag = {
       id: uuidv4(),
       name: newTagName,
       color: newTagColor
     };
-    setTags([...tags, newTag]);
-    setNewTagName('');
+
+    try {
+      await api.saveTag(newTag);
+      setTags([...tags, newTag]);
+      setNewTagName('');
+    } catch (err) {
+      console.error('Failed to add tag:', err);
+      alert('Erro ao adicionar tag');
+    }
   };
 
-  const handleDeleteTag = (tagId: string) => {
-    setTags(tags.filter(t => t.id !== tagId));
-    // Clean up deleted tags from contacts
-    setContacts(contacts.map(c => ({
-      ...c,
-      tags: c.tags.filter(t => t !== tagId)
-    })));
+  const handleDeleteTag = async (tagId: string) => {
+    try {
+      await api.deleteTag(tagId);
+      setTags(tags.filter(t => t.id !== tagId));
+      // Clean up deleted tags from contacts
+      setContacts(contacts.map(c => ({
+        ...c,
+        tags: c.tags.filter(t => t !== tagId)
+      })));
+    } catch (err) {
+      console.error('Failed to delete tag:', err);
+      alert('Erro ao deletar tag');
+    }
   };
 
   // --- Broadcast Logic ---
